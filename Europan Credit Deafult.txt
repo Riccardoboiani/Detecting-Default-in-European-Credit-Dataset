@@ -34,26 +34,21 @@ import seaborn as sns
 from xgboost import XGBClassifier
 import shap
 
-
-
-
-
 # Load the data
 
-df = pd.read_csv('C:\\Users\\RBoiani\\OneDrive - BDO Italia SPA\\Desktop\\Credit Risk\\Credit scoring models\\European Credit Dataset\\creditcard.csv')
+df = pd.read_csv('dataset_path\\creditcard.csv')
 
+# Plot to see how many are in default and how many are not
+# 99.83% are not
+# 0.17% are
 
-#grafico per vedere quanti sono in default e quanti non lo sono
-#99,83% non lo sono
-#0,17% lo sono
-
-colors = ["#0101DF", "#DF0101"]
+ocolors = ["#0101DF", "#DF0101"]
 sns.countplot(x='Class', data=df, palette=colors)
 plt.title('Class Distributions \n (0: No Fraud || 1: Fraud)', fontsize=14)
 plt.show()
 
 
-#distribuzioni di transaction amount e transaction time
+#distributions of transaction amount and transaction time
 
 fig, ax = plt.subplots(1, 2, figsize=(18,4))
 
@@ -70,9 +65,10 @@ ax[1].set_xlim([min(time_val), max(time_val)])
 
 plt.show()
 
-#ora cerchiamo di ridimensionare le colonne time e amount come il resto del dataset
-#poi creiamo un subsample che ha le stesse osservazioni di fraud e non fraud
-#ci sono 492 fraud nel dataset, quindi prendiamo a caso 492 casi di non fraud e li mettiamo insieme
+# Now let's scale the Time and Amount columns like the rest of the dataset
+# Then we create a subsample with the same number of fraud and non-fraud observations
+# There are 492 fraud cases in the dataset, so we randomly select 492 non-fraud cases and combine them
+
 
 # Since most of our data has already been scaled we should scale the columns that are left to scale (Amount and Time)
 from sklearn.preprocessing import StandardScaler, RobustScaler
@@ -108,6 +104,8 @@ X = df.drop('Class', axis=1)
 y = df['Class']
 
 #MODELS
+
+#we use randomized search to seek the optimal parameters
 
 def train_model_cv_holdout_with_train_report(params, Model, X_train, X_test, y_train, y_test, model_name):
     """
@@ -233,13 +231,12 @@ X_train, X_test, y_train, y_test = train_test_split(
 
 
 #############################################
-# 4) Creiamo un DataFrame per raccogliere i risultati
+# 4) Create a DataFrame to collect the results
 #############################################
 Models = pd.DataFrame(columns=['Algorithm', 'Model Score', 'Precision', 'Recall', 'F1 score', 'ROC-AUC score'])
 
-
 #############################################
-# 5) Alleniamo e valutiamo vari modelli
+# 5) Train and evaluate the models
 #############################################
 
 # 5.1) K-Nearest Neighbors
@@ -320,18 +317,17 @@ plt.show()
 
 
 
-# Recupera la pipeline di XGBoost dal DataFrame Models
-xgb_pipeline = Models.loc[Models['Algorithm']=="XGBoost", 'model'].values[0]
+#we then take the XGBOOST models, since it's the most efficient, to investingate a little bit more the results 
 
-# Estrai il classificatore vero e proprio (ultimo step della pipeline)
+xgb_pipeline = Models.loc[Models['Algorithm']=="XGBoost", 'model'].values[0]
 xgb_clf = xgb_pipeline.steps[-1][1]
 
-# Costruisci l’explainer SHAP
+# build the explainer SHAP
 explainer = shap.TreeExplainer(xgb_clf)
 shap_values = explainer.shap_values(X_test)
 
-# Plot 1: scatter con effetto e direzione delle feature
+# Plot 1
 shap.summary_plot(shap_values, X_test)
 
-# Plot 2: bar plot con importanza media assoluta
+# Plot 2: bar plot with absolute importance
 shap.summary_plot(shap_values, X_test, plot_type="bar")
