@@ -1,0 +1,337 @@
+# Import basic libraries
+import numpy as np # linear algebra
+import pandas as pd # data processing, CSV file I/O (e.g. pd.read_csv)
+import tensorflow as tf
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.manifold import TSNE
+from sklearn.decomposition import PCA, TruncatedSVD
+import matplotlib.patches as mpatches
+import time
+
+# Classifier Libraries
+from sklearn.linear_model import LogisticRegression
+from sklearn.svm import SVC
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.ensemble import RandomForestClassifier
+import collections
+
+
+# Other Libraries
+from sklearn.model_selection import train_test_split
+from sklearn.pipeline import make_pipeline
+from imblearn.pipeline import make_pipeline as imbalanced_make_pipeline
+from imblearn.over_sampling import SMOTE
+from imblearn.under_sampling import NearMiss
+from imblearn.metrics import classification_report_imbalanced
+from sklearn.metrics import precision_score, recall_score, f1_score, roc_auc_score, accuracy_score, classification_report
+from collections import Counter
+from sklearn.model_selection import KFold, StratifiedKFold
+import warnings
+warnings.filterwarnings("ignore")
+import seaborn as sns
+from xgboost import XGBClassifier
+import shap
+
+
+
+
+
+# Load the data
+
+df = pd.read_csv('C:\\Users\\RBoiani\\OneDrive - BDO Italia SPA\\Desktop\\Credit Risk\\Credit scoring models\\European Credit Dataset\\creditcard.csv')
+
+
+#grafico per vedere quanti sono in default e quanti non lo sono
+#99,83% non lo sono
+#0,17% lo sono
+
+colors = ["#0101DF", "#DF0101"]
+sns.countplot(x='Class', data=df, palette=colors)
+plt.title('Class Distributions \n (0: No Fraud || 1: Fraud)', fontsize=14)
+plt.show()
+
+
+#distribuzioni di transaction amount e transaction time
+
+fig, ax = plt.subplots(1, 2, figsize=(18,4))
+
+amount_val = df['Amount'].values
+time_val = df['Time'].values
+
+sns.distplot(amount_val, ax=ax[0], color='r')
+ax[0].set_title('Distribution of Transaction Amount', fontsize=14)
+ax[0].set_xlim([min(amount_val), max(amount_val)])
+
+sns.distplot(time_val, ax=ax[1], color='b')
+ax[1].set_title('Distribution of Transaction Time', fontsize=14)
+ax[1].set_xlim([min(time_val), max(time_val)])
+
+plt.show()
+
+#ora cerchiamo di ridimensionare le colonne time e amount come il resto del dataset
+#poi creiamo un subsample che ha le stesse osservazioni di fraud e non fraud
+#ci sono 492 fraud nel dataset, quindi prendiamo a caso 492 casi di non fraud e li mettiamo insieme
+
+# Since most of our data has already been scaled we should scale the columns that are left to scale (Amount and Time)
+from sklearn.preprocessing import StandardScaler, RobustScaler
+
+# RobustScaler is less prone to outliers.
+
+std_scaler = StandardScaler()
+rob_scaler = RobustScaler()
+
+df['scaled_amount'] = rob_scaler.fit_transform(df['Amount'].values.reshape(-1,1))
+df['scaled_time'] = rob_scaler.fit_transform(df['Time'].values.reshape(-1,1))
+
+df.drop(['Time','Amount'], axis=1, inplace=True)
+
+scaled_amount = df['scaled_amount']
+scaled_time = df['scaled_time']
+
+df.drop(['scaled_amount', 'scaled_time'], axis=1, inplace=True)
+df.insert(0, 'scaled_amount', scaled_amount)
+df.insert(1, 'scaled_time', scaled_time)
+
+# Amount and Time are Scaled!
+
+df.head()
+
+from sklearn.model_selection import train_test_split
+from sklearn.model_selection import StratifiedShuffleSplit
+
+print('No Frauds', round(df['Class'].value_counts()[0]/len(df) * 100,2), '% of the dataset')
+print('Frauds', round(df['Class'].value_counts()[1]/len(df) * 100,2), '% of the dataset')
+
+X = df.drop('Class', axis=1)
+y = df['Class']
+
+#MODELS
+
+def train_model_cv_holdout_with_train_report(params, Model, X_train, X_test, y_train, y_test, model_name):
+    """
+    1) Esegue RandomizedSearchCV su tutto X_train per trovare i migliori iperparametri.
+    2) Con i best_params, fa una cross-validation (K=5) "manuale" su X_train, accumula
+       le predizioni e stampa UN UNICO classification_report aggregato sul training.
+    3) Allena il modello finale (con best_params) su TUTTO X_train.
+    4) Valuta su X_test e stampa classification_report del test.
+    5) Restituisce un dizionario con le metriche finali (test set).
+    """
+    from imblearn.pipeline import make_pipeline
+    from imblearn.over_sampling import SMOTE
+    from sklearn.model_selection import StratifiedKFold, RandomizedSearchCV
+    from sklearn.metrics import (
+        classification_report, confusion_matrix,
+        accuracy_score, precision_score, recall_score, f1_score, roc_auc_score
+    )
+
+    # A) Trova i best_params con RandomizedSearchCV (CV interna su X_train)
+    inner_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+
+    rand_search = RandomizedSearchCV(
+        estimator=Model,
+        param_distributions=params,
+        n_iter=4,
+        scoring='f1',
+        cv=inner_cv,
+        n_jobs=-1,
+        random_state=42
+    )
+
+    # Pipeline "provvisoria" per la ricerca parametri
+    pipeline_search = make_pipeline(
+        SMOTE(sampling_strategy='minority', random_state=42),
+        rand_search
+    )
+
+    # Fit sul TRAIN (80%)
+    pipeline_search.fit(X_train, y_train)
+
+    # Ottengo i parametri ottimi trovati
+    best_params = rand_search.best_params_
+    print(f"\n[INFO] {model_name} - Best Params trovati con RandomSearch:", best_params)
+
+    # B) Cross-validation manuale (5 fold) sul training per avere un SINGLE REPORT aggregato
+    outer_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+
+    all_train_true = []
+    all_train_pred = []
+
+    # Modello "finale" con i best_params
+    # costruiamo di nuovo un'istanza del modello con i best_params
+    best_model = Model.set_params(**best_params)
+    # e una pipeline con SMOTE + best_model
+    pipeline_final_train = make_pipeline(
+        SMOTE(sampling_strategy='minority', random_state=42),
+        best_model
+    )
+
+    for train_idx, val_idx in outer_cv.split(X_train, y_train):
+        X_tr, X_val = X_train.iloc[train_idx], X_train.iloc[val_idx]
+        y_tr, y_val = y_train.iloc[train_idx], y_train.iloc[val_idx]
+
+        # Allena su (X_tr, y_tr)
+        pipeline_final_train.fit(X_tr, y_tr)
+
+        # Predici su (X_val, y_val)
+        y_val_pred = pipeline_final_train.predict(X_val)
+
+        # Accumula per report aggregato
+        all_train_true.extend(y_val)
+        all_train_pred.extend(y_val_pred)
+
+    print(f"\n=== {model_name}: Classification Report aggregato su Training (5 fold) ===")
+    print(classification_report(all_train_true, all_train_pred))
+
+    # C) Ora allena su TUTTO il training set
+    pipeline_final_train.fit(X_train, y_train)
+
+    # D) Valutazione finale sul test set (20%)
+    y_pred_test = pipeline_final_train.predict(X_test)
+    y_pred_proba = pipeline_final_train.predict_proba(X_test)[:, 1]
+
+    print(f"\n=== {model_name} - CLASSIFICATION REPORT (TEST SET) ===")
+    print(classification_report(y_test, y_pred_test))
+
+    # (Opzionale) Confusion matrix su test
+    print("Confusion Matrix (test):")
+    print(confusion_matrix(y_test, y_pred_test))
+
+    # Metriche numeriche su test
+    acc = accuracy_score(y_test, y_pred_test)
+    prec = precision_score(y_test, y_pred_test, average='macro')
+    rec = recall_score(y_test, y_pred_test, average='macro')
+    f1 = f1_score(y_test, y_pred_test, average='macro')
+    auc = roc_auc_score(y_test, y_pred_test)
+
+    return {
+        'Algorithm': model_name,
+        'Model Score': f"{round(acc * 100, 2)}%",
+        'Precision': round(prec, 2),
+        'Recall': round(rec, 2),
+        'F1 score': round(f1, 2),
+        'ROC-AUC score': round(auc, 2),
+        'y_test': y_test,  # 👈 lo aggiungiamo per usarlo dopo
+        'y_pred_proba': y_pred_proba, # 👈 lo aggiungiamo per il plot finale
+        'model': pipeline_final_train #salvo xgboost per gli shap values
+    }, best_params
+
+#############################################
+# 3) Separazione train–test (80–20) UNA SOLA VOLTA
+#############################################
+X = df.drop('Class', axis=1)
+y = df['Class']
+
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y,
+    test_size=0.2,
+    random_state=42,
+    stratify=y    # Mantiene le proporzioni delle classi
+)
+
+
+
+#############################################
+# 4) Creiamo un DataFrame per raccogliere i risultati
+#############################################
+Models = pd.DataFrame(columns=['Algorithm', 'Model Score', 'Precision', 'Recall', 'F1 score', 'ROC-AUC score'])
+
+
+#############################################
+# 5) Alleniamo e valutiamo vari modelli
+#############################################
+
+# 5.1) K-Nearest Neighbors
+#print("K Nearest Neighbour")
+#knn_params = {
+    #"n_neighbors": list(range(2, 5, 1)),
+    #"algorithm": ['auto', 'ball_tree', 'kd_tree', 'brute']
+#}
+#knn_result, knn_best_params = train_model_cv_holdout_with_train_report(knn_params, KNeighborsClassifier(),
+                                    #X_train, X_test, y_train, y_test,
+                                    #)
+#Models = pd.concat([Models, pd.DataFrame([knn_result])], ignore_index=True)
+
+# 5.2) Logistic Regression
+print("Logistic Regression")
+lr_params = {
+    "penalty": ['l2'],
+    "C": [0.001, 0.01, 0.1, 1, 10, 100, 1000]
+}
+lr_result, lr_best_params = train_model_cv_holdout_with_train_report(lr_params, LogisticRegression(solver='liblinear'),
+                                   X_train, X_test, y_train, y_test,
+                                   "Logistic Regression")
+Models = pd.concat([Models, pd.DataFrame([lr_result])], ignore_index=True)
+
+# 5.3) XGBoost
+print("XGBoost")
+xgb_params = {
+    'n_estimators': [50, 100],
+    'max_depth': [3, 5, 7],
+    'learning_rate': [0.01, 0.1, 0.2],
+    'subsample': [0.8, 1]
+}
+xgb_result, xgb_best_params = train_model_cv_holdout_with_train_report(
+    xgb_params,
+    XGBClassifier(use_label_encoder=False, eval_metric='logloss'),
+    X_train, X_test, y_train, y_test,
+    "XGBoost"
+)
+Models = pd.concat([Models, pd.DataFrame([xgb_result])], ignore_index=True)
+
+# 5.4) Decision Tree
+print("DecisionTree Classifier")
+dt_params = {
+    "criterion": ["gini", "entropy"],
+    "max_depth": list(range(2, 4, 1)),
+    "min_samples_leaf": list(range(5, 7, 1))
+}
+dt_result,dt_best_params = train_model_cv_holdout_with_train_report(dt_params, DecisionTreeClassifier(),
+                                   X_train, X_test, y_train, y_test,
+                                   "DecisionTree Classifier")
+Models = pd.concat([Models, pd.DataFrame([dt_result])], ignore_index=True)
+
+
+from sklearn.metrics import roc_curve, auc
+import matplotlib.pyplot as plt
+
+plt.figure(figsize=(8,6))
+
+for i, row in Models.iterrows():
+    # Recupera le pred proba dal dict che hai salvato
+    model_name = row['Algorithm']
+    y_test = row['y_test']
+    y_pred_proba = row['y_pred_proba']
+
+    fpr, tpr, _ = roc_curve(y_test, y_pred_proba)
+    roc_auc = auc(fpr, tpr)
+
+    plt.plot(fpr, tpr, lw=2, label=f'{model_name} (AUC = {roc_auc:.2f})')
+
+plt.plot([0,1],[0,1], color='navy', lw=2, linestyle='--')
+plt.xlim([0.0,1.0])
+plt.ylim([0.0,1.05])
+plt.xlabel('False Positive Rate')
+plt.ylabel('True Positive Rate')
+plt.title('ROC Curves - All Models')
+plt.legend(loc="lower right")
+plt.show()
+
+
+
+# Recupera la pipeline di XGBoost dal DataFrame Models
+xgb_pipeline = Models.loc[Models['Algorithm']=="XGBoost", 'model'].values[0]
+
+# Estrai il classificatore vero e proprio (ultimo step della pipeline)
+xgb_clf = xgb_pipeline.steps[-1][1]
+
+# Costruisci l’explainer SHAP
+explainer = shap.TreeExplainer(xgb_clf)
+shap_values = explainer.shap_values(X_test)
+
+# Plot 1: scatter con effetto e direzione delle feature
+shap.summary_plot(shap_values, X_test)
+
+# Plot 2: bar plot con importanza media assoluta
+shap.summary_plot(shap_values, X_test, plot_type="bar")
